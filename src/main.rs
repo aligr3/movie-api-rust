@@ -58,20 +58,23 @@ struct ConfigData {
 
 // ---------- Load Config ----------
 fn load_config() -> (String, String) {
+    // Erst versuchen aus Umgebungsvariablen zu laden (für Railway/Fly.io)
     let api_key = std::env::var("SUPABASE_API_KEY")
         .unwrap_or_else(|_| {
-            // Fallback zu config.json
-            let config: Config = serde_json::from_str(
-                &std::fs::read_to_string("config.json").unwrap()
-            ).unwrap();
+            // Fallback zu config.json für lokale Entwicklung
+            let config_content = fs::read_to_string("config.json")
+                .expect("Failed to read config.json");
+            let config: Config = serde_json::from_str(&config_content)
+                .expect("Failed to parse config.json");
             config.data.supabase_api_key
         });
     
     let url = std::env::var("SUPABASE_URL")
         .unwrap_or_else(|_| {
-            let config: Config = serde_json::from_str(
-                &std::fs::read_to_string("config.json").unwrap()
-            ).unwrap();
+            let config_content = fs::read_to_string("config.json")
+                .expect("Failed to read config.json");
+            let config: Config = serde_json::from_str(&config_content)
+                .expect("Failed to parse config.json");
             config.data.supabase_url
         });
     
@@ -80,22 +83,27 @@ fn load_config() -> (String, String) {
 
 // ---------- Supabase Client Helper ----------
 fn supabase_client() -> (Client, HeaderMap, String) {
-    let config = load_config();
+    let (api_key, url) = load_config();
+    
     let mut headers = HeaderMap::new();
-    headers.insert("apikey", HeaderValue::from_str(&config.data.supabase_api_key).unwrap());
+    headers.insert("apikey", HeaderValue::from_str(&api_key).unwrap());
     headers.insert(
         "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", config.data.supabase_api_key)).unwrap(),
+        HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
     );
     headers.insert("Content-Type", HeaderValue::from_static("application/json"));
     headers.insert("Prefer", HeaderValue::from_static("return=representation"));
 
-    (Client::new(), headers, config.data.supabase_url)
+    (Client::new(), headers, url)
 }
 
 // ---------- Main ----------
 #[tokio::main]
 async fn main() {
+    // Port für Railway/Fly.io (dynamisch) oder lokal 8080
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+
     let app = Router::new()
         .route("/", get(serve_frontend))
         .route("/api", get(root_handler))
@@ -109,11 +117,11 @@ async fn main() {
                 .allow_headers(Any)
         );
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap();
 
-    println!("🚀 Server running → http://127.0.0.1:8080");
+    println!("🚀 Server running → http://0.0.0.0:{}", port);
     println!("📊 API endpoints:");
     println!("  - GET    /api/movies");
     println!("  - POST   /api/movies");
