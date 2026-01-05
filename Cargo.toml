@@ -7,10 +7,6 @@ edition = "2021"
 name = "server"
 path = "src/main.rs"
 
-[[bin]]
-name = "bevy_demo"
-path = "src/bevy_demo.rs"
-
 [dependencies]
 # Web server dependencies
 axum = "0.7"
@@ -25,9 +21,6 @@ rand = "0.8"
 # KV Store dependencies
 serde_yaml = "0.9"
 anyhow = "1.0"
-
-# Bevy game engine
-bevy = "0.14"
 
 [dev-dependencies]
 # For testing the KV store
