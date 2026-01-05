@@ -6,19 +6,24 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use reqwest::{Client, header::{HeaderMap, HeaderValue}};
+use reqwest::{
+    Client,
+    header::{HeaderMap, HeaderValue},
+};
 use tower_http::cors::{CorsLayer, Any};
 use std::fs;
 
 mod movie;
 use movie::Movie;
 
+// ---------- API Info ----------
 #[derive(Serialize)]
 struct ApiInfo {
     message: String,
     endpoints: Vec<String>,
 }
 
+// ---------- Pagination ----------
 #[derive(Deserialize)]
 struct PaginationParams {
     #[serde(default = "default_limit")]
@@ -29,6 +34,7 @@ struct PaginationParams {
 
 fn default_limit() -> i32 { 20 }
 
+// ---------- Movie Payload ----------
 #[derive(Serialize, Deserialize, Debug)]
 struct NewMovie {
     title: String,
@@ -58,17 +64,17 @@ struct ConfigData {
 
 // ---------- Load Config ----------
 fn load_config() -> (String, String) {
-    // Erst versuchen aus Umgebungsvariablen zu laden (für Railway/Fly.io)
     let api_key = std::env::var("SUPABASE_API_KEY")
         .unwrap_or_else(|_| {
-            // Fallback zu config.json für lokale Entwicklung
             let config_content = fs::read_to_string("config.json")
                 .expect("Failed to read config.json");
             let config: Config = serde_json::from_str(&config_content)
                 .expect("Failed to parse config.json");
             config.data.supabase_api_key
-        });
-    
+        })
+        .trim()
+        .to_string();
+
     let url = std::env::var("SUPABASE_URL")
         .unwrap_or_else(|_| {
             let config_content = fs::read_to_string("config.json")
@@ -76,23 +82,40 @@ fn load_config() -> (String, String) {
             let config: Config = serde_json::from_str(&config_content)
                 .expect("Failed to parse config.json");
             config.data.supabase_url
-        });
-    
+        })
+        .trim()
+        .to_string();
+
     (api_key, url)
 }
 
-// ---------- Supabase Client Helper ----------
+// ---------- Supabase Client ----------
 fn supabase_client() -> (Client, HeaderMap, String) {
     let (api_key, url) = load_config();
-    
+
     let mut headers = HeaderMap::new();
-    headers.insert("apikey", HeaderValue::from_str(&api_key).unwrap());
+
+    headers.insert(
+        "apikey",
+        HeaderValue::from_str(&api_key)
+            .expect("SUPABASE_API_KEY ist kein gültiger HTTP-Header"),
+    );
+
     headers.insert(
         "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
+        HeaderValue::from_str(&format!("Bearer {}", api_key))
+            .expect("Authorization Header ungültig"),
     );
-    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
-    headers.insert("Prefer", HeaderValue::from_static("return=representation"));
+
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("application/json"),
+    );
+
+    headers.insert(
+        "Prefer",
+        HeaderValue::from_static("return=representation"),
+    );
 
     (Client::new(), headers, url)
 }
@@ -100,7 +123,6 @@ fn supabase_client() -> (Client, HeaderMap, String) {
 // ---------- Main ----------
 #[tokio::main]
 async fn main() {
-    // Port für Railway/Fly.io (dynamisch) oder lokal 8080
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr = format!("0.0.0.0:{}", port);
 
@@ -114,22 +136,18 @@ async fn main() {
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods(Any)
-                .allow_headers(Any)
+                .allow_headers(Any),
         );
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .unwrap();
+        .expect("Failed to bind TCP listener");
 
-    println!("🚀 Server running → http://0.0.0.0:{}", port);
-    println!("📊 API endpoints:");
-    println!("  - GET    /api/movies");
-    println!("  - POST   /api/movies");
-    println!("  - DELETE /api/movies/:id");
+    println!("🚀 Server running on 0.0.0.0:{}", port);
 
     axum::serve(listener, app)
         .await
-        .unwrap();
+        .expect("Server crashed");
 }
 
 // ---------- Handlers ----------
@@ -148,8 +166,11 @@ async fn root_handler() -> Json<ApiInfo> {
     })
 }
 
-async fn get_movies(Query(params): Query<PaginationParams>) -> Json<Vec<Movie>> {
+async fn get_movies(
+    Query(params): Query<PaginationParams>,
+) -> Json<Vec<Movie>> {
     let (client, headers, supabase_url) = supabase_client();
+
     let url = format!(
         "{}/rest/v1/movies?limit={}&offset={}",
         supabase_url,
@@ -157,13 +178,24 @@ async fn get_movies(Query(params): Query<PaginationParams>) -> Json<Vec<Movie>> 
         params.offset
     );
 
-    let res = client.get(&url).headers(headers).send().await.unwrap();
-    let movies: Vec<Movie> = res.json().await.unwrap();
+    let res = client
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .expect("Supabase request failed");
+
+    let movies: Vec<Movie> = res
+        .json()
+        .await
+        .expect("Failed to parse movie list");
 
     Json(movies)
 }
 
-async fn create_movie(Json(payload): Json<NewMovie>) -> Result<(StatusCode, Json<Movie>), (StatusCode, String)> {
+async fn create_movie(
+    Json(payload): Json<NewMovie>,
+) -> Result<(StatusCode, Json<Movie>), (StatusCode, String)> {
     let (client, headers, supabase_url) = supabase_client();
     let url = format!("{}/rest/v1/movies", supabase_url);
 
@@ -173,24 +205,46 @@ async fn create_movie(Json(payload): Json<NewMovie>) -> Result<(StatusCode, Json
         .json(&payload)
         .send()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Request error: {:?}", e)))?;
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Request error: {:?}", e),
+        ))?;
 
-    let movies: Vec<Movie> = res.json().await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Parse error: {:?}", e)))?;
+    let movies: Vec<Movie> = res
+        .json()
+        .await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Parse error: {:?}", e),
+        ))?;
 
     movies.first()
         .cloned()
         .map(|m| (StatusCode::CREATED, Json(m)))
-        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "No movie returned".to_string()))
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No movie returned".to_string(),
+        ))
 }
 
-async fn delete_movie(Path(id): Path<i32>) -> Result<StatusCode, StatusCode> {
+async fn delete_movie(
+    Path(id): Path<i32>,
+) -> Result<StatusCode, StatusCode> {
     let (client, headers, supabase_url) = supabase_client();
     let url = format!("{}/rest/v1/movies?id=eq.{}", supabase_url, id);
 
-    let res = client.delete(&url).headers(headers).send().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let res = client
+        .delete(&url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if res.status().is_success() { Ok(StatusCode::NO_CONTENT) } else { Err(StatusCode::NOT_FOUND) }
+    if res.status().is_success() {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 // ---------- Test Endpoint ----------
@@ -198,9 +252,18 @@ async fn test_insert() -> Result<String, StatusCode> {
     let (client, headers, supabase_url) = supabase_client();
     let url = format!("{}/rest/v1/movies", supabase_url);
 
-    let test_data = serde_json::json!({ "title": "Test Movie" });
+    let test_data = serde_json::json!({
+        "title": "Test Movie"
+    });
 
-    let res = client.post(&url).headers(headers).json(&test_data).send().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let res = client
+        .post(&url)
+        .headers(headers)
+        .json(&test_data)
+        .send()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
 
